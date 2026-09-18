@@ -24,7 +24,7 @@ Built with FastAPI, SQLAlchemy 2.0, and Pydantic — a clean, modular reference 
 - **Idempotent Webhook Processing** — Duplicate event detection prevents double-processing of Stripe webhooks
 - **Signature Verification** — Stripe webhook signatures verified on every inbound event
 - **Link Management** — Full CRUD: list, view, cancel payment links
-- **Expiration Support** — Optional time-limited offers with automatic expiry
+- **Expiration Support** — Optional time-limited offers; expired links are marked and refused at checkout
 - **Interactive API Docs** — Swagger UI and ReDoc out of the box (FastAPI)
 
 ## Architecture
@@ -43,7 +43,7 @@ app/
     └── webhooks.py  # Stripe webhook handler
 ```
 
-**Why this structure:** Each layer has exactly one responsibility. Routes never touch the ORM directly — they go through models via the session dependency. Schemas are never reused as ORM models. Configuration is typed and validated at startup, not sprinkled through `os.getenv()` calls across the codebase.
+**Why this structure:** Each layer has exactly one responsibility. Routes receive their database session through FastAPI dependency injection, so tests swap in an isolated database without touching route code. Schemas are never reused as ORM models. Configuration is typed and validated at startup, not sprinkled through `os.getenv()` calls across the codebase.
 
 ## Tech Stack
 
@@ -68,10 +68,11 @@ Stripe guarantees **at-least-once delivery** for webhooks — the same event may
 This API detects duplicates by persisting each processed event's ID:
 
 1. Receive webhook, verify Stripe signature with `STRIPE_WEBHOOK_SECRET`
-2. Check if `event.id` already exists in the `processed_events` table
+2. Check if `event.id` already exists in the `webhook_events` table
 3. If yes → return `200 OK` immediately, skip processing (idempotent replay)
-4. If no → process the event inside a transaction, record `event.id` on commit
-5. If the transaction fails → `event.id` is not recorded, Stripe retries later
+4. If no → process the event and record `event.id` in the same transaction
+5. If processing fails → the transaction rolls back, the API returns `500`, and Stripe retries later
+6. If two deliveries of the same event race → the unique constraint on `event.id` rejects the second, which is acknowledged as a duplicate
 
 **Result:** Stripe can retry any webhook an unlimited number of times without side effects. Payment status updates are exactly-once from the application's perspective.
 
@@ -82,9 +83,9 @@ Every inbound webhook request is verified against the Stripe webhook signing sec
 ```python
 try:
     event = stripe.Webhook.construct_event(
-        payload=request.body,
+        payload=await request.body(),
         sig_header=request.headers["stripe-signature"],
-        secret=settings.STRIPE_WEBHOOK_SECRET,
+        secret=settings.stripe_webhook_secret,
     )
 except stripe.error.SignatureVerificationError:
     raise HTTPException(status_code=400, detail="Invalid signature")
@@ -98,17 +99,27 @@ All environment variables are loaded through `pydantic-settings`, validated at s
 
 ```python
 class Settings(BaseSettings):
-    STRIPE_SECRET_KEY: str
-    STRIPE_PUBLISHABLE_KEY: str
-    STRIPE_WEBHOOK_SECRET: str
-    APP_URL: str
-    DATABASE_URL: str = "sqlite:///./payments.db"
-    DEBUG: bool = True
+    stripe_secret_key: str
+    stripe_publishable_key: str
+    stripe_webhook_secret: str = ""
+    app_url: str = "http://localhost:8000"
+    debug: bool = False
+    database_url: str = "sqlite:///./payments.db"
 
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+
+    @model_validator(mode="after")
+    def check_production_settings(self):
+        if self.debug:
+            return self
+        if not self.app_url.startswith("https://"):
+            raise ValueError("APP_URL must use HTTPS when DEBUG is false")
+        if not self.stripe_webhook_secret:
+            raise ValueError("STRIPE_WEBHOOK_SECRET is required when DEBUG is false")
+        return self
 ```
 
-**Why it matters:** Missing or malformed env vars cause a startup failure with a clear error message, not a runtime `KeyError` three hours into production traffic.
+**Why it matters:** Missing or malformed env vars cause a startup failure with a clear error message, not a runtime `KeyError` three hours into production traffic. Outside debug mode, the app refuses to start without HTTPS and a webhook signing secret.
 
 ### Modular Route Structure
 
@@ -179,7 +190,7 @@ curl -X POST https://api.example.com/api/links \
 - **Idempotent event processing** — duplicate Stripe events detected by event ID, never re-processed
 - **Database parameterization** — all queries go through SQLAlchemy ORM, no raw SQL string interpolation
 - **HTTPS-only in production** — APP_URL enforced as HTTPS in non-debug mode
-- **No sensitive data logged** — payment details and customer PII scrubbed from log output
+- **No sensitive data logged** — logs carry payment link IDs only; no amounts, emails or other customer data
 
 ## Testing
 
@@ -202,7 +213,9 @@ Test coverage focuses on:
 - Stripe API client mocking (no live API calls in tests)
 - Webhook signature verification (valid and forged signatures)
 - Idempotent event processing (duplicate event detection)
-- Database transaction rollback on failure
+- Database transaction rollback on failure, with Stripe retry
+- Production settings validation (HTTPS and webhook secret required)
+- No customer PII in logs
 
 ## Environment Variables
 
@@ -213,7 +226,7 @@ Test coverage focuses on:
 | `STRIPE_WEBHOOK_SECRET`   | Stripe webhook signing secret        | Yes (prod)     |
 | `APP_URL`                 | Base URL of your application         | Yes            |
 | `DATABASE_URL`            | Database connection string           | No (SQLite default) |
-| `DEBUG`                   | Enable debug mode                    | No (default: false in prod) |
+| `DEBUG`                   | Enable debug mode                    | No (default: false)         |
 
 ## Skills Demonstrated
 
