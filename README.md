@@ -116,6 +116,8 @@ Routes are split into focused modules and mounted via FastAPI routers. Adding a 
 
 ## API Reference
 
+![Swagger UI with all API endpoints](docs/images/swagger-ui.png)
+
 ### Health Check
 
 | Method | Endpoint  | Description             |
@@ -168,35 +170,7 @@ curl -X POST https://api.example.com/api/links \
 
 ## Payment Flow
 
-```
-┌──────────┐         ┌──────────┐         ┌────────────┐         ┌──────────┐
-│   You    │         │   API    │         │   Stripe   │         │ Customer │
-└────┬─────┘         └────┬─────┘         └──────┬─────┘         └────┬─────┘
-     │                    │                       │                    │
-     │  POST /api/links   │                       │                    │
-     ├───────────────────▶│                       │                    │
-     │                    │  Create Checkout      │                    │
-     │                    │  Session              │                    │
-     │                    ├──────────────────────▶│                    │
-     │                    │◀──────────────────────┤                    │
-     │◀───────────────────┤  payment_url          │                    │
-     │                    │                       │                    │
-     │  Share payment_url ─────────────────────────────────────────────▶│
-     │                    │                       │                    │
-     │                    │                       │  Customer pays     │
-     │                    │                       │◀───────────────────┤
-     │                    │                       │                    │
-     │                    │  Webhook: succeeded   │                    │
-     │                    │◀──────────────────────┤                    │
-     │                    │                       │                    │
-     │                    │  Verify signature     │                    │
-     │                    │  Check idempotency    │                    │
-     │                    │  Update status: paid  │                    │
-     │                    │                       │                    │
-     │                    │  200 OK               │                    │
-     │                    ├──────────────────────▶│                    │
-     │                    │                       │                    │
-```
+![Payment flow: link creation, Stripe Checkout, verified and idempotent webhook](docs/images/payment-flow.png)
 
 ## Security
 
@@ -208,6 +182,8 @@ curl -X POST https://api.example.com/api/links \
 - **No sensitive data logged** — payment details and customer PII scrubbed from log output
 
 ## Testing
+
+![pytest output: 24 tests passing](docs/images/test-results.png)
 
 ```bash
 # Full suite
