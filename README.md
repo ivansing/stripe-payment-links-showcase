@@ -181,7 +181,7 @@ curl -X POST https://api.example.com/api/links \
 
 ## Payment Flow
 
-![Payment flow: link creation, Stripe Checkout, verified and idempotent webhook](docs/images/payment-flow.png)
+![Payment flow: link creation, Stripe Checkout, verified and idempotent webhook](docs/images/payment-flow.svg)
 
 ## Security
 
